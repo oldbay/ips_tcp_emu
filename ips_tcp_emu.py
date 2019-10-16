@@ -1,6 +1,7 @@
 import socket
 import math
 import copy
+from random import randint
 
 import ogr
 import osr
@@ -17,22 +18,10 @@ class TrackGen(object):
     """"""
 
     #----------------------------------------------------------------------
-    def __init__(self, shp_file, distance, **kwargs):
-        """
-        kwargs
-        datetime - YYYYMMDDHHMM
-        speed - km/h
-        
-        datetime to timestamp
-        dt = datetime.datetime(2019,10,15,17,48)
-        ts = int(time.mktime(dt.timetuple()))
-        
-        timestamp to datatime
-        ts = int(time.time())
-        dt = datetime.datetime.fromtimestamp(ts)
-        """
+    def __init__(self, shp_file, distance, diff_distance=0):
         
         self.distance = distance
+        self.diff_distance = diff_distance
         self.driver = ogr.GetDriverByName("ESRI Shapefile")
         self.ds = self.driver.Open(shp_file)
         
@@ -76,26 +65,36 @@ class TrackGen(object):
                     while current_dist:
                         if label_start:
                             coord = (None, None)
+                            track_dist = None
                             label_start = False
                         elif coord_first:
                             # start point
                             coord = self.retransorm(
                                 list(shapely_line.coords)[0]
                             )
+                            track_dist = 0
+                            old_current_dist = 0
                             coord_first = False
                         elif current_dist < line_length:
                             # interpolate next points
                             coord = self.retransorm(
                                 list(shapely_line.interpolate(current_dist).coords)[0]
                             )
-                            current_dist += self.distance
+                            track_dist = self.distance + randint(
+                                -self.diff_distance,
+                                self.diff_distance
+                            )
+                            old_current_dist = current_dist
+                            current_dist += track_dist
                         else:
                             # end point
                             coord = self.retransorm(
                                 list(shapely_line.coords)[-1]
                             )
+                            track_dist = int(line_length - old_current_dist)
                             current_dist = False
-                        yield int(time.time()), coord[0], coord[1]
+                        yield coord[0], coord[1], track_dist
+
 
 ########################################################################
 class IpsSocket:
@@ -131,7 +130,13 @@ host = "education.ripas.ru"
 port = 9336
 user = "test_proto"
 track_file = "shp/track.shp"
-distance = 15
+distance = 10
+diff_distance = 5
+speed = 5
+diff_speed = 2
+start_datetime = False
+#start_datetime = (2019, 10, 15, 17, 48)
+imit_mode = True
 
 def dd2nmea(lat, lon):
     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
@@ -177,45 +182,70 @@ user_data = {
     "resp": "#AL#1", 
 }
 track_data = {
-    "req": "#SD#{0};{1};{2};{3};12;0;0;3",
+    "req": "#SD#{0};{1};{2};{3};{4};0;0;3",
     "resp": "#ASD#1", 
 }
 
 # TCP socket
-#sock = IpsSocket(imit=True)
-sock = IpsSocket()
+sock = IpsSocket(imit=imit_mode)
 sock.connect(host, port)
 send_socket(sock, **ping_data)
 
-track_gen = TrackGen(track_file, distance)
-for point in track_gen.get_track_points():
-    ts = int(point[0])
-    dt = datetime.datetime.fromtimestamp(ts)
-    nmea_date = "{0:02d}{1:02d}{2:02d}".format(
-        dt.day,
-        dt.month,
-        int(dt.year)-2000, 
-    )
-    nmea_time = "{0:02d}{1:02d}{2:02d}".format(
-        dt.hour,
-        dt.minute,
-        dt.second, 
-    )
-    dd_lat = point[1]
-    dd_lon = point[2]
+if isinstance(start_datetime, (list, tuple)):
+    start_dt = datetime.datetime(*start_datetime)
+    start_ts = int(time.mktime(start_dt.timetuple()))
+    ts = start_ts
+else:
+    start_ts = False
     
-    if not dd_lat and not dd_lon:    
+track_gen = TrackGen(track_file, distance, diff_distance)
+for point in track_gen.get_track_points():
+    dd_lat = point[0]
+    dd_lon = point[1]
+    track_dist = point[2]
+    if not dd_lat and not dd_lon and not track_dist:    
         sock.close()
         sock.connect(host, port)
         send_socket(sock, **user_data)
     else:
+        #coord
         nmea_lat, nmea_lon = dd2nmea(dd_lat, dd_lon)
+        #speed
+        if track_dist:
+            nmea_speed = speed + randint(
+                -diff_speed,
+                diff_speed
+            )
+            ms_spped = nmea_speed / 3.6
+            track_time = int(ms_spped * track_dist)
+        else:
+            nmea_speed = 0
+            track_time = 0
+        #data & time
+        if start_ts:
+            ts += track_time
+        else:
+            time.sleep(track_time)
+            ts = int(time.time())
+        dt = datetime.datetime.fromtimestamp(ts)
+        nmea_date = "{0:02d}{1:02d}{2:02d}".format(
+            dt.day,
+            dt.month,
+            int(dt.year)-2000, 
+        )
+        nmea_time = "{0:02d}{1:02d}{2:02d}".format(
+            dt.hour,
+            dt.minute,
+            dt.second, 
+        )
+        
         make_track = copy.deepcopy(track_data)
         make_track['req'] = make_track['req'].format(
             nmea_date,
             nmea_time, 
             nmea_lat,
-            nmea_lon, 
+            nmea_lon,
+            nmea_speed, 
         )
         send_socket(sock, **make_track)
 

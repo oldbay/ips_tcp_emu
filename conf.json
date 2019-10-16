@@ -1,0 +1,12 @@
+{
+    "host": "education.ripas.ru", 
+    "port": 9336, 
+    "user": "imit_bot", 
+    "track_file": "shp/track.shp", 
+    "distance": 10, 
+    "diff_distance": 5, 
+    "speed": 5, 
+    "diff_speed": 2, 
+    "start_datetime": [2019, 10, 15, 17, 48], 
+    "imit_mode": false 
+}

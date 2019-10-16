@@ -1,6 +1,10 @@
+#!/usr/bin/python2
+
+import sys
 import socket
 import math
 import copy
+import json
 from random import randint
 
 import ogr
@@ -97,7 +101,7 @@ class TrackGen(object):
 
 
 ########################################################################
-class IpsSocket:
+class IpsSocket(object):
     """"""
 
     #----------------------------------------------------------------------
@@ -125,130 +129,148 @@ class IpsSocket:
             self.sock.close()
     
 
+########################################################################
+class Core(object):
+    """"""
 
-host = "education.ripas.ru"
-port = 9336
-user = "test_proto"
-track_file = "shp/track.shp"
-distance = 10
-diff_distance = 5
-speed = 5
-diff_speed = 2
-start_datetime = False
-#start_datetime = (2019, 10, 15, 17, 48)
-imit_mode = True
-
-def dd2nmea(lat, lon):
-    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
-        nmea_min_sec = lambda dd: math.fabs(math.modf(dd)[0] * 60)
-        lat_sym = lambda dd: 'N' if dd > 0 else 'S'
-        lon_sym = lambda dd: 'E' if dd > 0 else 'W'
-    
-        lat_nmea = "{0:02d}{1:02d}{2};{3}".format(
-            int(lat),
-            int(nmea_min_sec(lat)),
-            "{0:.11f}".format(math.modf(nmea_min_sec(lat))[0])[1:], 
-            lat_sym(lat), 
-        )
-        lon_nmea = "{0:03d}{1:02d}{2};{3}".format(
-            int(lon),
-            int(nmea_min_sec(lon)),
-            "{0:.11f}".format(math.modf(nmea_min_sec(lon))[0])[1:], 
-            lon_sym(lon), 
-        )
-        return lat_nmea, lon_nmea
-
-def send_socket(sock_obj, **kwargs):
-    if kwargs.get("req", False) and kwargs.get("resp", False):
-        sock_obj.sendall(b"{}\r\n".format(kwargs["req"]))
-        received = sock_obj.recv(1024)
-        if received != "IMIT MODE" and kwargs["resp"] not in received:
-            raise Exception(
-                "IPS OUTPUT ERROR\nSent:     {0}\nERR:      {1}".format(
-                    kwargs["req"],
-                    received
-                )
-            )
-        else:
-            print("Sent:     {}".format(kwargs["req"]))
-            print("Received: {}".format(received))
-
-ping_data = {
-    "req": "#P#",
-    "resp":"#AP#", 
-} 
-user_data = {
-    "req": "#L#{};NA".format(user),
-    "resp": "#AL#1", 
-}
-track_data = {
-    "req": "#SD#{0};{1};{2};{3};{4};0;0;3",
-    "resp": "#ASD#1", 
-}
-
-# TCP socket
-sock = IpsSocket(imit=imit_mode)
-sock.connect(host, port)
-send_socket(sock, **ping_data)
-
-if isinstance(start_datetime, (list, tuple)):
-    start_dt = datetime.datetime(*start_datetime)
-    start_ts = int(time.mktime(start_dt.timetuple()))
-    ts = start_ts
-else:
-    start_ts = False
-    
-track_gen = TrackGen(track_file, distance, diff_distance)
-for point in track_gen.get_track_points():
-    dd_lat = point[0]
-    dd_lon = point[1]
-    track_dist = point[2]
-    if not dd_lat and not dd_lon and not track_dist:    
-        sock.close()
-        sock.connect(host, port)
-        send_socket(sock, **user_data)
-    else:
-        #coord
-        nmea_lat, nmea_lon = dd2nmea(dd_lat, dd_lon)
-        #speed
-        if track_dist:
-            nmea_speed = speed + randint(
-                -diff_speed,
-                diff_speed
-            )
-            ms_spped = nmea_speed / 3.6
-            track_time = int(ms_spped * track_dist)
-        else:
-            nmea_speed = 0
-            track_time = 0
-        #data & time
-        if start_ts:
-            ts += track_time
-        else:
-            time.sleep(track_time)
-            ts = int(time.time())
-        dt = datetime.datetime.fromtimestamp(ts)
-        nmea_date = "{0:02d}{1:02d}{2:02d}".format(
-            dt.day,
-            dt.month,
-            int(dt.year)-2000, 
-        )
-        nmea_time = "{0:02d}{1:02d}{2:02d}".format(
-            dt.hour,
-            dt.minute,
-            dt.second, 
-        )
+    #----------------------------------------------------------------------
+    def __init__(self, **kwargs):
+        """Constructor"""
+        self.host = kwargs.get("host", None)
+        self.port = kwargs.get("port", None)
+        self.user = kwargs.get("user", None)
+        self.track_file = kwargs.get("track_file", None)
+        self.distance = kwargs.get("distance", None)
+        self.diff_distance = kwargs.get("diff_distance", 0)
+        self.speed = kwargs.get("speed", None)
+        self.diff_speed = kwargs.get("diff_speed", 0)
+        self.start_datetime = kwargs.get("start_datetime", False)
+        self.imit_mode = kwargs.get("imit_mode", False)
         
-        make_track = copy.deepcopy(track_data)
-        make_track['req'] = make_track['req'].format(
-            nmea_date,
-            nmea_time, 
-            nmea_lat,
-            nmea_lon,
-            nmea_speed, 
-        )
-        send_socket(sock, **make_track)
+        imit_mode_test = (None in (self.host, self.port, self.user)) and not self.imit_mode
+        track_test = None in (self.track_file, self.distance)
+        if imit_mode_test or track_test:
+            raise Exception('ERROR: Config File')
+        
+        self.ping_data = {
+            "req": "#P#",
+            "resp":"#AP#", 
+        } 
+        self.user_data = {
+            "req": "#L#{};NA".format(self.user),
+            "resp": "#AL#1", 
+        }
+        self.track_data = {
+            "req": "#SD#{0};{1};{2};{3};{4};0;0;3",
+            "resp": "#ASD#1", 
+        }
 
-sock.close()
+        self.sock = IpsSocket(imit=self.imit_mode)
+
+        if isinstance(self.start_datetime, (list, tuple)):
+            start_dt = datetime.datetime(*self.start_datetime)
+            self.start_ts = int(time.mktime(start_dt.timetuple()))
+        else:
+            self.start_ts = False
+        self.ts = self.start_ts
+
+    def dd2nmea(self, lat, lon):
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            nmea_min_sec = lambda dd: math.fabs(math.modf(dd)[0] * 60)
+            lat_sym = lambda dd: 'N' if dd > 0 else 'S'
+            lon_sym = lambda dd: 'E' if dd > 0 else 'W'
+        
+            lat_nmea = "{0:02d}{1:02d}{2};{3}".format(
+                int(lat),
+                int(nmea_min_sec(lat)),
+                "{0:.11f}".format(math.modf(nmea_min_sec(lat))[0])[1:], 
+                lat_sym(lat), 
+            )
+            lon_nmea = "{0:03d}{1:02d}{2};{3}".format(
+                int(lon),
+                int(nmea_min_sec(lon)),
+                "{0:.11f}".format(math.modf(nmea_min_sec(lon))[0])[1:], 
+                lon_sym(lon), 
+            )
+            return lat_nmea, lon_nmea
+    
+    def send_socket(self, **kwargs):
+        if kwargs.get("req", False) and kwargs.get("resp", False):
+            self.sock.sendall(b"{}\r\n".format(kwargs["req"]))
+            received = self.sock.recv(1024)
+            if received != "IMIT MODE" and kwargs["resp"] not in received:
+                raise Exception(
+                    "IPS OUTPUT ERROR\nSent:     {0}\nERR:      {1}".format(
+                        kwargs["req"],
+                        received
+                    )
+                )
+            else:
+                print("Sent:     {}".format(kwargs["req"]))
+                print("Received: {}".format(received))
+    
+    def run(self):
+        self.sock.connect(self.host, self.port)
+        self.send_socket(**self.ping_data)
+            
+        track_gen = TrackGen(self.track_file, self.distance, self.diff_distance)
+        for point in track_gen.get_track_points():
+            dd_lat = point[0]
+            dd_lon = point[1]
+            track_dist = point[2]
+            if not dd_lat and not dd_lon and not track_dist:    
+                self.sock.close()
+                self.sock.connect(self.host, self.port)
+                self.send_socket(**self.user_data)
+            else:
+                #coord
+                nmea_lat, nmea_lon = self.dd2nmea(dd_lat, dd_lon)
+                #speed
+                if track_dist:
+                    nmea_speed = self.speed + randint(
+                        -self.diff_speed,
+                        self.diff_speed
+                    )
+                    ms_spped = nmea_speed / 3.6
+                    track_time = int(ms_spped * track_dist)
+                else:
+                    nmea_speed = 0
+                    track_time = 0
+                #data & time
+                if self.start_ts:
+                    self.ts += track_time
+                else:
+                    time.sleep(track_time)
+                    self.ts = int(time.time())
+                dt = datetime.datetime.fromtimestamp(self.ts)
+                nmea_date = "{0:02d}{1:02d}{2:02d}".format(
+                    dt.day,
+                    dt.month,
+                    int(dt.year)-2000, 
+                )
+                nmea_time = "{0:02d}{1:02d}{2:02d}".format(
+                    dt.hour,
+                    dt.minute,
+                    dt.second, 
+                )
+                
+                make_track = copy.deepcopy(self.track_data)
+                make_track['req'] = make_track['req'].format(
+                    nmea_date,
+                    nmea_time, 
+                    nmea_lat,
+                    nmea_lon,
+                    nmea_speed, 
+                )
+                self.send_socket(**make_track)
+        self.sock.close()
+        
+    def __call__(self):
+        return self.run()
 
 
+if __name__ == '__main__':
+    with open(sys.argv[1]) as file_:  
+        kwargs = json.load(file_)
+    core = Core(**kwargs)
+    core()
